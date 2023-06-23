@@ -1,0 +1,186 @@
+I found this wonderful write up so I decided to do some research my self at the bottom of this is what I have found
+Credits for writeup goes to here https://snt.sh/2020/09/rooting-the-t-mobile-t9-franklin-wireless-r717/
+
+Rooting and Unlocking the T-Mobile T9 (Franklin Wireless R717)
+
+I recently acquired a T-Mobile T9 mobile hotspot from a friend who used it with their Test Drive program, and like I do with most embedded devices I poked around. This thread will go over my software findings, and will give you the information needed to gain root access and SIM Unlock the device.
+
+NOTE: I am not responsible for any damage done to your T-Mobile Hotspot. Proceed at your own risk. Note that some of the web pages and tools in this device allow you to modify the device in ways that YOU SHOULD NOT DO since it may be ILLEGAL in your jurisdiction. Please do not proceed unless you know what you are doing.
+
+OTAs
+The OTA system on the device is very simplistic. It phones home to the following URL, with the following syntax:
+https://fota.pintracview.com/fota/T9/check_update.php?carrier=<CARRIER>&rev=<CURRENTVERSION>&imei=<IMEI>
+
+So for example, my T9 was reporting to check_update.php?carrier=tmobile&rev=891 when it was on firmware revision R717F21.FR.891. Manually calling this URL with any outdated revision will link you to the latest OTA file, which is a .enc
+
+Thankfully, these .enc files are very easy to extract. If you are on a newer version of OpenSSL, you can extract this OTA using the following command:
+
+openssl enc -aes-128-cbc -d -md md5 -in R717F21.FR.1311_ota_update_all_sm.enc -out R717F21.FR.1311_ota_update_all_sm.tar -k frkenc##KEY@R717
+This will then provide you with a .tar file, which contains a file named ota_update_all.zip which has a copy of the rootfs files. On this device, all OTAs are full image releases, so you can upgrade and downgrade as you please using the web interface. As for the decryption key, I extracted this from the binary at /usr/bin/fota_app. I was also able to start a collection of firmwares, including an unreleased update. You can access these OTA files from this Mega Share.
+
+https://mega.nz/folder/FJ8wWYAJ#Q1oUEtIUJrtjB1atkOAXrA
+
+As for the OTA zip, from what it looks like it is unsigned so you may be able to modify it and have it apply, but this has not been tested.
+
+Config File
+Once nice thing about this device is you can enable SSH, ADB, and other hidden goodies by simply generating a configuration backup, modifying it, and uploading it back to the device. As for the configuration backup itself, you can convert it from it’s .bin format to it’s true form, a .tar.gz, using the commands below:
+
+openssl enc -aes-128-cbc -d -md md5 -in hotspot_cfg.bin -out hotspot_cfg_packed.tar -k frkenc##KEY@R717
+mkdir hotspot_cfg_packed
+tar xf hotspot_cfg_packed.tar -C ./hotspot_cfg_packed
+cd hotspot_cfg_packed
+mkdir hotspot_cfg_packed_2
+tar xf hotspot_cfg.tar -C ./hotspot_cfg_packed_2
+As you can see, the configuration dump is actually aes-128-cbc encrypted, and contains nested tar.gz files. You can now modify the configuration as you wish, repackage it, and re-upload it.
+
+SSH
+During my research it was found that SSH can be enabled on this device, and once enabled, you can login as the root user. If you are on a firmware version 891 or below, you can run the following command to quickly enable SSH.
+
+curl "http://192.168.0.1/cgi-bin/webpst.service_setting.cgi" \
+  -H "Content-Type: application/json" \
+  -H "Origin: http://192.168.0.1" \
+  -H "Referer: http://192.168.0.1/webpst/usb_mode.html" \
+  --data '{"command":"save","params":null,"data":{"ssh":"on","tether":"","bridge":""}}' \
+  --insecure
+Note that if your firmware is above version 891, then to enable SSH you will need to modify the Config File. If you want, I have created a basic python script that can do this for you, which is available on GitHub
+witch you can find by going to the following link https://gist.github.com/riptidewave93/ad135229b0f0939da7bd223d7f723528 Just note it requires OpenSSL 1.1.0 or newer, and is only tested on Ubuntu 18.04.
+
+As for logging in over SSH, I was able to discover the root SSH password for these devices is frk9x07. Sadly, the engineers at Franklin Wireless only used a descrypt (DES) key for the device, which hashcat was able to crack within seconds using my GTX 1080.
+
+ADB
+As a bonus, you can enable an ADB shell that drops you right to a root prompt without any password! Note this seems to work on firmware version 891 and below, but it may not work on newer firmwares.
+
+curl "http://192.168.0.1/cgi-bin/webpst.usb_mode.cgi" \
+  -H "Content-Type: application/json" \
+  -H "Origin: http://192.168.0.1" \
+  -H "Referer: http://192.168.0.1/webpst/usb_mode.html" \
+  --data '{"command":"save","params":null,"data":{"usb_mode":"902D"}}' \
+  --insecure
+On newer OTAs, you can still enable ADB but it needs to be done manually from the /data/configs/mobileap_cfg.xml file. This is done by updating the UsbMode setting value from 9025 to 902D, saving, then rebooting the device. Note you also may need to replace the contents of /data/configs/hsusb_next with 902D as well.
+
+Hidden Web Pages
+During my digging around the device I found a handful of hidden pages, which were secured by plain text passwords that were statically built into binaries. Below you can find the pages I found, as well as where I found the passwords for said pages.
+
+Hidden Configuration Pages
+http://192.168.0.1/hidden/
+http://192.168.0.1/webpst/
+Password: frk@r717
+Password was extracted from /var/volatile/www/htdocs/cgi-bin/login.cgi
+IT Admin Page
+http://192.168.0.1/itadmin/
+Password: t9_it_@dmin
+Password was extracted from /var/volatile/www/htdocs/cgi-bin/logi
+Hidden Engineering Page
+http://192.168.0.1/engineering/franklin/
+Username: r717
+Password: frkengr717
+User and Password were extracted from /etc/pwlighttpd
+Note: On firmwares newer than 891, you need to first run the following as root before you can access the engineering pages.
+/usr/bin/copy_htdocs.sh eng
+SIM Unlock
+While exploring the binary at /usr/bin/QCMAP_Web_CLIENT, I accidentally stumbled upon the logic used to SIM Unlock the device. To generate your SIM unlock code, just use the following below in any Linux or Mac Terminal.
+
+export IMEI=YOURIMEIGOESHERE
+echo -n "${IMEI}simlock" | sha1sum | cut -c1-8
+In the above, replace YOURIMEIGOESHERE with the IMEI number of the T9 Hotspot. Once done, you can enter the generated code into the Web UI to unlock the device for all SIM cards.
+
+Conclusion
+Hands down, this has to be one of my favorite IoT devices I have had the pleasure of playing with. I appreciate the fact that Franklin Wireless put minimal effort into securing the device since it makes for a great platform to build on top of. If anyone at Franklin Wireless is reading this, I recommend the following changes to help secure your devices.
+
+Don’t store passwords in plain text in your binaries. Use sha256 or md5+salt, or some other method.
+Please don’t allow your “hidden pages” to have password prompts skipped by modifying the browser’s HTML rendering. This is just sloppy, and is how I was able to get ADB access to start my research. Either having them locked down using lighttpd, or having a completely separate auth page that is properly hardened is my recommendation.
+Don’t use DEScrypt linux passwords. The time it took me to crack the hash was less than 10 seconds. md5crypt at a MINIMUM, and sha1 if you want to get a bit fancier. Also, make the password longer than 8 characters to help reduce the chance of a successful bruteforce.
+If you need to have ADB, Jail it down. Another T-Mobile hotspot I have allows for ADB, but it runs as a non-existent UID so you can barely view the filesystem. Something like this would probably be a safer bet.
+Move to incremental OTAs, and SIGN THEM CORRECTLY. Most android OTAs use certs for OTA authentication. Also, implement rollback protection and disable the ability for users to upload OTAs.
+
+Easiest way to prevent rollback would be to disable the OTA engine and change the URL it points to. This can be done by editing the configuration file at /data/configs/mobileap_cfg.xml and do changes similar to what I have documented at https://gist.github.com/riptidewave93/fc88a7de97abea669bd2d790a1df4c0a
+
+And the following links are ones that I have found myself
+
+https://fota.pintracview.com/fota/T9/check_update.php
+https://fota.pintracview.com/fota/T9/check_update.php%22,
+https://fota.pintracview.com/fota/T9/check_update.php?carrier=
+https://fota.pintracview.com/fota/T9/tmobile/R717F21.FR.1311_ota_update_all_sm.enc
+https://fota.pintracview.com/fota/T9/tmobile/R717F21.FR.2602_for_MR3.enc
+http://admin.pintracview.com/robots.txt
+https://fota.pintracview.com/
+https://fota.pintracview.com/favicon.ico
+https://fota.pintracview.com/fota/T9/check_update.php
+https://fota.pintracview.com/fota/T9/check_update.php%22,
+https://fota.pintracview.com/fota/T9/check_update.php?carrier=
+https://fota.pintracview.com/fota/T9/tmobile/R717F21.FR.1311_ota_update_all_sm.enc
+https://fota.pintracview.com/fota/T9/tmobile/R717F21.FR.2602_for_MR3.enc
+https://fota.pintracview.com/robots.txt
+https://mdm.pintracview.com/
+https://mdm.pintracview.com/login/
+http://mdm-temp.pintracview.com/
+http://mdmapi-temp.pintracview.com/
+http://obd-staging-device-api.pintracview.com/
+https://rogers.pintracview.com/
+https://support.pintracview.com/
+https://support.pintracview.com/account.php?do=create
+https://support.pintracview.com/assets/default/css/print.css
+https://support.pintracview.com/assets/default/css/print.css?f1e9e88
+https://support.pintracview.com/assets/default/css/theme.css
+https://support.pintracview.com/assets/default/css/theme.css?f1e9e88
+https://support.pintracview.com/css/flags.css
+https://support.pintracview.com/css/flags.css?f1e9e88
+https://support.pintracview.com/css/font-awesome.min.css
+https://support.pintracview.com/css/font-awesome.min.css?f1e9e88
+https://support.pintracview.com/css/jquery-ui-timepicker-addon.css
+https://support.pintracview.com/css/jquery-ui-timepicker-addon.css?f1e9e88
+https://support.pintracview.com/css/osticket.css
+https://support.pintracview.com/css/osticket.css?f1e9e88
+https://support.pintracview.com/css/redactor.css
+https://support.pintracview.com/css/redactor.css?f1e9e88
+https://support.pintracview.com/css/rtl.css
+https://support.pintracview.com/css/rtl.css?f1e9e88
+https://support.pintracview.com/css/select2.min.css
+https://support.pintracview.com/css/select2.min.css?f1e9e88
+https://support.pintracview.com/css/thread.css
+https://support.pintracview.com/css/thread.css?f1e9e88
+https://support.pintracview.com/css/ui-lightness/jquery-ui-1.10.3.custom.min.css
+https://support.pintracview.com/css/ui-lightness/jquery-ui-1.10.3.custom.min.css?f1e9e88
+https://support.pintracview.com/favicon.ico
+https://support.pintracview.com/images/oscar-favicon-16x16.png
+https://support.pintracview.com/images/oscar-favicon-32x32.png
+https://support.pintracview.com/index.php
+https://support.pintracview.com/js/filedrop.field.js
+https://support.pintracview.com/js/filedrop.field.js?f1e9e88
+https://support.pintracview.com/js/jquery-3.4.0.min.js
+https://support.pintracview.com/js/jquery-3.4.0.min.js?f1e9e88
+https://support.pintracview.com/js/jquery-ui-1.12.1.custom.min.js
+https://support.pintracview.com/js/jquery-ui-1.12.1.custom.min.js?f1e9e88
+https://support.pintracview.com/js/jquery-ui-timepicker-addon.js
+https://support.pintracview.com/js/jquery-ui-timepicker-addon.js?f1e9e88
+https://support.pintracview.com/js/osticket.js
+https://support.pintracview.com/js/osticket.js?f1e9e88
+https://support.pintracview.com/js/redactor-osticket.js
+https://support.pintracview.com/js/redactor-osticket.js?f1e9e88
+https://support.pintracview.com/js/redactor-plugins.js
+https://support.pintracview.com/js/redactor-plugins.js?f1e9e88
+https://support.pintracview.com/js/redactor.min.js
+https://support.pintracview.com/js/redactor.min.js?f1e9e88
+https://support.pintracview.com/js/select2.min.js
+https://support.pintracview.com/js/select2.min.js?f1e9e88
+https://support.pintracview.com/kb/faq.php?cid=1
+https://support.pintracview.com/kb/faq.php?cid=2
+https://support.pintracview.com/kb/faq.php?id=11
+https://support.pintracview.com/kb/faq.php?id=15
+https://support.pintracview.com/kb/faq.php?id=3
+https://support.pintracview.com/kb/faq.php?id=32
+https://support.pintracview.com/kb/faq.php?id=33
+https://support.pintracview.com/kb/faq.php?id=35
+https://support.pintracview.com/kb/faq.php?id=36
+https://support.pintracview.com/kb/faq.php?id=37
+https://support.pintracview.com/kb/faq.php?id=38
+https://support.pintracview.com/kb/faq.php?id=8
+https://support.pintracview.com/kb/index.php
+https://support.pintracview.com/logo.php
+https://support.pintracview.com/robots.txt
+https://support.pintracview.com/scp/css/typeahead.css
+https://support.pintracview.com/scp/css/typeahead.css?f1e9e88
+https://support.pintracview.com/scp/js/bootstrap-typeahead.js
+https://support.pintracview.com/scp/js/bootstrap-typeahead.js?f1e9e88
+https://support.pintracview.com/sitemap.xml
+https://support.pintracview.com/view.php
